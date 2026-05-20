@@ -48,7 +48,7 @@
       font-size: .9rem;
       color: var(--muted);
     }
-    input {
+    input, select {
       width: 100%;
       border: 1px solid #374151;
       background: #0b1220;
@@ -57,7 +57,7 @@
       padding: 8px 10px;
       outline: none;
     }
-    input:focus { border-color: var(--accent); }
+    input:focus, select:focus { border-color: var(--accent); }
     .video-wrap {
       position: relative;
       border-radius: 12px;
@@ -108,17 +108,17 @@
       <h1>Chụp ảnh hiện trường (dùng offline)</h1>
       <p class="muted">Nhập thông tin, bật camera, sau đó bấm “Chụp & tải ảnh”. Ảnh xuất ra đã đóng dấu đầy đủ thông tin ngay trên ảnh.</p>
       <div class="fields">
-        <label>Tên vị trí chụp
-          <input id="locationName" placeholder="Ví dụ: Cổng chính khu A" />
+        <label>Tên vị trí chụp (tự động theo GPS - tên tỉnh)
+          <input id="locationName" placeholder="Tự động lấy theo GPS" readonly />
         </label>
         <label>Tên trạm
-          <input id="stationName" placeholder="Ví dụ: Trạm 110kV ABC" />
+          <select id="stationName"></select>
         </label>
         <label>Tên ảnh
-          <input id="photoName" placeholder="Ví dụ: MATTRUOC_TBA" />
+          <select id="photoName"></select>
         </label>
-        <label>Mã ảnh
-          <input id="photoCode" placeholder="Ví dụ: IMG-0001" />
+        <label>Mã ảnh (tự động theo tên ảnh)
+          <input id="photoCode" placeholder="Tự động sinh" readonly />
         </label>
       </div>
     </div>
@@ -154,6 +154,13 @@
       photoName: document.getElementById('photoName'),
       photoCode: document.getElementById('photoCode')
     };
+    const STATIONS = ['TRAM_110KV_ABC', 'TRAM_220KV_XYZ', 'TRAM_500KV_MN'];
+    const PHOTO_ITEMS = [
+      { name: 'MAT_TRUOC_TBA', code: 'MTTBA' },
+      { name: 'MAY_BIEN_AP', code: 'MBA' },
+      { name: 'TU_DIEU_KHIEN', code: 'TDK' },
+      { name: 'HE_THONG_COT', code: 'HTC' }
+    ];
 
     let stream = null;
     let latestPos = null;
@@ -199,6 +206,32 @@
       overlay.textContent = overlayText(getMeta());
     }
 
+    function initSelectOptions() {
+      fields.stationName.innerHTML = STATIONS.map(v => `<option value="${v}">${v}</option>`).join('');
+      fields.photoName.innerHTML = PHOTO_ITEMS.map(v => `<option value="${v.name}" data-code="${v.code}">${v.name}</option>`).join('');
+      updatePhotoCodeFromName();
+    }
+
+    function updatePhotoCodeFromName() {
+      const selected = fields.photoName.options[fields.photoName.selectedIndex];
+      fields.photoCode.value = selected?.dataset?.code || 'N/A';
+    }
+
+    async function updateLocationNameFromGPS(pos) {
+      const lat = pos?.coords?.latitude;
+      const lon = pos?.coords?.longitude;
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      try {
+        const resp = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`, {
+          headers: { 'Accept': 'application/json' }
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const province = data?.address?.state || data?.address?.province || data?.address?.region;
+        if (province) fields.locationName.value = province;
+      } catch (_) {}
+    }
+
     async function startCamera() {
       try {
         stream = await navigator.mediaDevices.getUserMedia({
@@ -227,7 +260,10 @@
         return;
       }
       navigator.geolocation.watchPosition(
-        pos => { latestPos = pos; },
+        pos => {
+          latestPos = pos;
+          updateLocationNameFromGPS(pos);
+        },
         err => { statusEl.textContent = `GPS lỗi: ${err.message}`; },
         { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }
       );
@@ -297,10 +333,9 @@
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       drawOverlayToCanvas(ctx, canvas.width, canvas.height, text);
 
-      const safeName = (meta.photoName !== 'N/A' ? meta.photoName : 'anh_hien_truong').replace(/[^a-zA-Z0-9_-]/g, '_');
       const safeCode = (meta.photoCode !== 'N/A' ? meta.photoCode : 'code').replace(/[^a-zA-Z0-9_-]/g, '_');
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const fileName = `${safeName}_${safeCode}_${stamp}.jpg`;
+      const safeStation = (meta.stationName !== 'N/A' ? meta.stationName : 'TRAM_MAC_DINH').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const fileName = `${safeStation}/${safeCode}.jpg`;
 
       canvas.toBlob(blob => {
         const a = document.createElement('a');
@@ -317,9 +352,14 @@
     document.getElementById('stopBtn').addEventListener('click', stopCamera);
     document.getElementById('captureBtn').addEventListener('click', captureAndDownload);
 
-    Object.values(fields).forEach(el => el.addEventListener('input', updateLiveOverlay));
+    fields.photoName.addEventListener('change', () => {
+      updatePhotoCodeFromName();
+      updateLiveOverlay();
+    });
+    fields.stationName.addEventListener('change', updateLiveOverlay);
     setInterval(updateLiveOverlay, 500);
 
+    initSelectOptions();
     startGeoWatch();
     startCompass();
     updateLiveOverlay();
